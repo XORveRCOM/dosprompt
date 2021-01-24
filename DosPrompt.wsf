@@ -1,0 +1,203 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<package>
+	<job id="DosPrompt">
+		<runtime>
+			<description>PowerToys の Open Command Window Here に Doskey を自動実行する機能を追加する。</description>
+			<named
+				name="uninstall" type="boolean" required="false"
+				helpstring="これを設定すると、コンテキストメニューを削除します。"
+			/>
+		</runtime>
+		<object id="Shell" progid="WScript.Shell"/>
+		<object id="ShellApp" progid="Shell.Application"/>
+		<object id="fso" progid="Scripting.FileSystemObject"/>
+
+		<script language="VBScript">
+<![CDATA[
+			Option Explicit
+
+			Const toolName = "DosPrompt ツール"
+
+			' スクリプトの情報
+			Dim ScriptName:	ScriptName = WScript.ScriptFullName
+			Dim ScriptPath:	ScriptPath = fso.GetParentFolderName(ScriptName)
+
+			' Vista 以降判定
+			Dim postVista:	postVista = IsPostVista
+
+			' 引数
+			Dim uac
+			Dim unInstall
+			uac = WScript.Arguments.Named.Exists("uac")
+			unInstall = WScript.Arguments.Named.Exists("uninstall")
+			if (Not uac) And postVista Then
+				Dim arg
+				If unInstall Then
+					arg = """" & ScriptName & """ /uac /uninstall"
+				Else
+					arg = """" & ScriptName & """ /uac"
+				End If
+				' Vista 以降ならば、管理者として再実行 (レジストリ操作の都合)
+				ShellApp.ShellExecute WScript.FullName, arg, "", "runas", 1
+				WScript.Quit 0
+			End If
+
+			' doskeyマクロ定義ファイル
+			Dim macrofile:	macrofile = fso.BuildPath(ScriptPath, "doskey.config.txt")
+
+			' 登録
+			Dim command
+			Const TopKey = "HKCR\Folder\shell\DosPromptHere\"
+			Const TopKeyRunAs = "HKCR\Folder\shell\DosPromptAdmin\"
+
+			If unInstall Then
+				' ===== UnInstall =====
+				MsgBox toolName & " 関連のコンテキストメニューを抹消します。" _
+					& vbLf & "スクリプト自身、マクロ定義ファイルは自動では削除されません。" _
+					& vbLf & "マクロ定義ファイル : " & macrofile, , WScript.ScriptName
+
+				' ログインユーザとして起動するcmd
+				Shell.RegDelete TopKey & "Command\"
+				Shell.RegDelete TopKey
+
+				If postVista Then
+					' ----- Vista 以降
+					' 管理者として起動するcmd
+					Shell.RegDelete TopKeyRunAs & "Command\"
+					Shell.RegDelete TopKeyRunAs
+				End If
+
+				' アンインストール用のショートカット
+				Dim lnkPath
+				lnkPath = fso.BuildPath(ScriptPath, toolName & "のアンインストール.lnk")
+				If fso.FileExists(lnkPath) Then fso.DeleteFile lnkPath, true
+			Else
+				' ===== Install =====
+				MsgBox toolName & " 関連のコンテキストメニューを登録します。" _
+					& vbLF & "抹消時は /uninstall を付けて起動してください。" _
+					& vbLf & "(ツールのフォルダにアンインストール用ショートカットを用意してあります)" _
+					& vbLf & "ツールのフォルダ : " & ScriptPath, , WScript.ScriptName
+
+				' デフォルトの DosKey マクロ定義ファイルの準備
+				If Not fso.FileExists(macrofile) Then
+					With fso.CreateTextFile(macrofile)
+						.WriteLine "[cmd.exe]"
+						.WriteLine "config=""" & macrofile & """"
+						.WriteLine "newconfig=doskey /macrofile=""" & macrofile & """"
+						.WriteLine "macros=doskey /macros"
+						.Close
+					End With
+				End If
+
+				' ログインユーザとして起動するcmd
+				command = "wscript """ & ScriptName & """ //JOB:Run /runas:false /path:""%1"" /macrofile:""" & macrofile & """"
+				Shell.RegWrite TopKey, "DosPrompt", "REG_SZ"
+				Shell.RegWrite TopKey & "Command\", command, "REG_SZ"
+
+				If postVista Then
+					' ----- Vista 以降
+					' 管理者として起動するcmd
+					command = "wscript """ & ScriptName & """ //JOB:Run /runas:true /path:""%1"" /macrofile:""" & macrofile & """"
+					Shell.RegWrite TopKeyRunAs, "DosPrompt (Admin)", "REG_SZ"
+					Shell.RegWrite TopKeyRunAs & "Command\", command, "REG_SZ"
+				End If
+
+				' アンインストール用のショートカット
+				CreateJobShortcut _
+					ScriptPath _
+				,	"DosPrompt" _
+				,	toolName & "のアンインストール" _
+				,	WScript.ScriptName & "をアンインストールします。" _
+				,	"/uninstall"
+			End If
+
+			WScript.Quit
+
+		' --------------------------------------------------------------------------------
+		' Vista 以降の判定
+		Function IsPostVista
+			With GetObject("winmgmts:" & "{impersonationLevel=impersonate}!\\.\root\cimv2")
+				Dim os
+				For Each os in .ExecQuery("SELECT * FROM Win32_OperatingSystem")
+					If left(os.Version, 3) >= 6.0 Then
+						IsPostVista = True
+						Exit Function
+					End If
+				Next
+			End With
+			IsPostVista = False
+		End Function
+
+		' --------------------------------------------------------------------------------
+		' このスクリプト内のJOBに対するショートカットを新規作成
+		Sub CreateJobShortcut(lnkPath, id, name, description, arg)
+			Dim Shortcut, lnkFilePath
+			lnkFilePath = fso.BuildPath(lnkPath, name & ".lnk")
+			If fso.FileExists(lnkFilePath) Then fso.DeleteFile lnkFilePath, true
+			With Shell.CreateShortcut(lnkFilePath)
+				.Description = description
+'				.IconLocation = fso.BuildPath(ScriptPath, "DosPrompt.ico")
+				.IconLocation = WScript.Path & "\wscript.exe,2"
+				.TargetPath = WScript.Path & "\wscript.exe"
+				.Arguments = """" & ScriptName & """ //JOB:" & id & " " & arg
+				.WindowStyle = 1			' 通常のウィンドウ
+				.WorkingDirectory = ScriptPath
+				.Save
+			End With
+		End Sub
+]]>
+		</script>
+	</job>
+
+	<job id="Run">
+		<runtime>
+			<description>指定したフォルダにおいて cmd.exe を管理者／一般ユーザで起動する。Doskey 自動実行つき。</description>
+			<named
+				name="runas" type="boolean" required="false"
+				helpstring="これに true を指定すると、管理者として cmd.exe を起動します。"
+			/>
+			<named
+				name="path" type="string" required="true"
+				helpstring="起動時のカレントディレクトリを指定します。"
+			/>
+			<named
+				name="macrofile" type="string" required="true"
+				helpstring="DosKey で使用するマクロファイルを指定します。"
+			/>
+		</runtime>
+		<object id="Shell" progid="WScript.Shell"/>
+		<object id="ShellApp" progid="Shell.Application"/>
+		<object id="fso" progid="Scripting.FileSystemObject"/>
+		<script language="VBScript">
+<![CDATA[
+			Option Explicit
+			Dim args:	Set args = WScript.Arguments
+			Dim runas: runas = args.Named.Item("runas")
+			Dim path: path = args.Named.Item("path")
+			Dim drive: drive = fso.GetDriveName(path)
+			Dim macrofile: macrofile = args.Named.Item("macrofile")
+			' コマンド拡張機能・ファイル名(Ctrl+F)およびディレクトリ名補完文字(Ctrl+D)を有効にして cmd.exe を起動。
+			' 1. DosKey を既定のマクロファイルを適用して実行。
+			' 2. ドライブとフォルダを移動。
+			' 3. 既定のマクロファイルを編集するためのコマンドを表示。
+			Dim cmdarg: cmdarg = "/E:ON /F:ON /K" _
+				& " doskey /macrofile=""" & macrofile & """" _
+				& " && " & drive & " && cd """ & path & """" _
+				& " && " & "echo please enter ""config"""
+			If runas Then
+				' 管理者として起動
+				Dim MacroPath:	MacroPath = fso.GetParentFolderName(macrofile)
+				Dim admincmd: admincmd = fso.BuildPath(MacroPath, "admin.cmd")
+				If fso.FileExists(admincmd) Then
+					cmdarg = cmdarg & " && " & admincmd
+				End If
+				ShellApp.ShellExecute "cmd.exe", cmdarg, "", "runas", 1
+			Else
+				' 一般ユーザとして起動
+				Shell.Run "cmd.exe " & cmdarg
+			End If
+]]>
+		</script>
+	</job>
+
+</package>
